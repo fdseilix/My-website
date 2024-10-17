@@ -77,7 +77,7 @@
           window.location.href = '/math/error.html'; // Redirect to error page
           throw new error("Account locked")
         } else if (response.status === 403) {
-          sessionStorage.setItem('password', password)
+          encryptAndStorePassword(password);
           sessionStorage.setItem('username', username)
           window.location.href = '/math/2fa.html'; // Redirect to 2FA page
           throw new error("2FA required")
@@ -100,6 +100,7 @@
         console.error('Error:', error);
       });
     });
+
 
   </script>
 </body>
