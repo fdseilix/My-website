@@ -457,8 +457,13 @@ def serve_public(path):
             return send_from_directory(public_folder, 'vpn_blocked.html'), 403
     
     app.logger.info(f"Requested path: {path}")
-    full_path = os.path.join(public_folder, path)
+    normalized_path = os.path.normpath(path)
+    full_path = os.path.join(public_folder, normalized_path)
     app.logger.info(f"Full path: {full_path}")
+
+    if not full_path.startswith(public_folder):
+        app.logger.warning(f"Attempted path traversal attack: {path}")
+        return send_from_directory(public_folder, 'Access_Denied.html'), 403
 
     if os.path.isdir(full_path):
         app.logger.info(f"Path is a directory, serving index.html from {full_path}")
