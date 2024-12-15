@@ -47,6 +47,13 @@
       cursor: pointer;
       border-radius: 5px;
     }
+
+    .forgot-password {
+      margin-top: 10px;
+      font-size: 14px;
+      color: #007BFF;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -55,6 +62,7 @@
     <input type="text" id="username" placeholder="Username">
     <input type="password" id="password" placeholder="Password">
     <button id="confirm">Confirm</button>
+    <p class="forgot-password" id="forgot-password">Forgot Password?</p>
     <p id="login-status"></p>
   </div>
   <script>
@@ -77,10 +85,15 @@
           window.location.href = '/math/error.html'; // Redirect to error page
           throw new error("Account locked")
         } else if (response.status === 403) {
-          sessionStorage.setItem('password', password)
-          sessionStorage.setItem('username', username)
-          window.location.href = '/math/2fa.html'; // Redirect to 2FA page
-          throw new error("2FA required")
+          sessionStorage.setItem('password', password);
+          sessionStorage.setItem('username', username);
+          sessionStorage.setItem('api_endpoint', 'https://scatterbox.dev/api/math/2fa-login');
+          sessionStorage.setItem('redirect_url', '/math/dashboard.html');
+          sessionStorage.setItem('response_keys', JSON.stringify(['user_id', 'points', 'is_mod', 'session_token', 'encrypted_token', 'mfa_enabled']));
+          sessionStorage.setItem('require_turnstile', 'false');
+          sessionStorage.setItem('request_method', 'POST');
+          window.location.href = '/math/2fa.html';
+          throw new Error("2FA required");
         } else {
           document.getElementById('login-status').textContent = 'Invalid username or password';
           throw new Error('Invalid login');
@@ -88,6 +101,7 @@
       })
       .then(function(data) {
         // Store user ID and points in session storage and redirect to dashboard
+        console.log(data.token)
         sessionStorage.setItem('user_id', data.user_id);
         sessionStorage.setItem('points', data.points);
         sessionStorage.setItem('is_mod', data.is_mod);
@@ -101,7 +115,9 @@
       });
     });
 
-
+    document.getElementById('forgot-password').addEventListener('click', function() {
+      window.location.href = '/math/send-password-reset.html'; // Redirect to password reset page
+    });
   </script>
 </body>
 </html>

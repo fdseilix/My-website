@@ -99,6 +99,7 @@
   <label id="settings-label" style="font-size: 2em;">Settings</label>
   <button id="name-change-btn" class="button">Change Username</button>
   <button id="password-change-btn" class="button">Change Password</button>
+  <button id="email-change-btn" class="button">Change Email</button>
   <script>
     window.addEventListener('load', function() {
       if (sessionStorage.getItem('mfa_enabled') === 'false') {
@@ -120,6 +121,20 @@
         };
         document.body.appendChild(remove2faBtn);
       }
+
+      var emailChangeBtn = document.getElementById('email-change-btn');
+      var emailSession = sessionStorage.getItem('email');
+      if (emailSession === null || emailSession === undefined) {
+        emailChangeBtn.textContent = 'Add Email';
+      } else {
+        emailChangeBtn.textContent = 'Edit Email';
+      }
+
+      emailChangeBtn.addEventListener('click', function() {
+        emailPopup.style.display = 'block';
+        overlay.style.display = 'block';
+        document.body.style.backgroundColor = 'rgba(0, 0, 0, 0.4)';
+      });
     });
   </script>
 
@@ -139,9 +154,18 @@
     <button id="confirm-password-btn" class="confirm-btn">Confirm</button>
   </div>
 
+  <div id="change-email-popup" class="popup">
+    <span id="close-btn-email">×</span>
+    <input type="email" class="input-field" id="new-email" placeholder="New Email">
+    <input type="password" class="input-field" id="email-password" placeholder="Password"> <!-- Add password field -->
+    <div class="cf-turnstile" data-sitekey="0x4AAAAAAAxE2R6Z0zwKgFG4" data-theme="light"></div>
+    <button id="confirm-email-btn" class="confirm-btn">Confirm</button>
+  </div>
+
   <script>
     var popup = document.getElementById('change-username-popup');
     var passwordPopup = document.getElementById('change-password-popup');
+    var emailPopup = document.getElementById('change-email-popup');
     var overlay = document.getElementById('overlay');
 
     // Open the username change popup and overlay
@@ -162,12 +186,14 @@
     function closePopup() {
       popup.style.display = 'none';
       passwordPopup.style.display = 'none';
+      emailPopup.style.display = 'none'; // Add this line to close email popup
       overlay.style.display = 'none';
       document.body.style.backgroundColor = '#ffffff';
     }
 
     document.getElementById('close-btn').addEventListener('click', closePopup);
     document.getElementById('close-btn-password').addEventListener('click', closePopup);
+    document.getElementById('close-btn-email').addEventListener('click', closePopup);
 
     // Confirm username change
     document.getElementById('confirm-btn').addEventListener('click', function () {
@@ -247,6 +273,50 @@
             window.location.reload();
           } else {
             alert('An unknown error has occurred.');
+            window.location.reload();
+          }
+        })
+        .catch(function (error) {
+          console.error('Error:', error);
+          alert('An error occurred. Please try again.');
+        });
+      closePopup();
+    });
+
+    // Confirm email change
+    document.getElementById('confirm-email-btn').addEventListener('click', function () {
+      var newEmail = document.getElementById('new-email').value;
+      var password = document.getElementById('email-password').value; // Get password value
+      var userID = sessionStorage.getItem('user_id');
+      var turnstileToken = window.turnstile.getResponse();
+      
+      if (!turnstileToken) {
+        alert('Please complete the verification.');
+        return;
+      }
+
+      var headers = new Headers();
+      headers.append('new-email', newEmail);
+      headers.append('password', password); // Add password to headers
+      headers.append('user-id', userID);
+      headers.append('session-token', sessionStorage.getItem('session_token'));
+      console.log(password);
+      headers.append('encrypted-token', sessionStorage.getItem('encrypted_token'));
+      headers.append('CF-Turnstile-Token', turnstileToken); // Add Turnstile token
+
+      fetch('https://scatterbox.dev/api/math/change-email', {
+        method: 'PUT',
+        headers: headers
+      })
+        .then(function (response) {
+          if (response.status === 200) {
+            alert('Email successfully changed.');
+            window.location.reload();
+          } else if (response.status === 401) {
+            alert('Password is incorrect.');
+            window.location.reload();
+          } else {
+            alert('An error occurred. Please try again.');
             window.location.reload();
           }
         })

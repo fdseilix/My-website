@@ -2,6 +2,7 @@
 
 # Web Framework
 Flask==2.2.5
+urllib
 
 # Database
 mysql-connector-python==9.1.0
