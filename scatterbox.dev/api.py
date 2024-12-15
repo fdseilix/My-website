@@ -2,6 +2,7 @@ import os
 import random
 import string
 from urllib.parse import quote, urlparse
+import urllib.parse
 import uuid
 import datetime
 import base64
@@ -31,6 +32,7 @@ import pyotp
 import qrcode
 import io
 import threading
+import urllib
 
 load_dotenv('/var/sites/.env')
 
@@ -544,7 +546,7 @@ def serve_public(path):
     if path.startswith('Community-api/radim/Uploads/'):
         return send_from_directory(public_folder, 'Access_Denied.html'), 403
     
-    if path.endswith('math/login.html') or path.endswith('math/signup.html'):
+    #if path.endswith('math/login.html') or path.endswith('math/signup.html'):
         if is_vpn_or_proxy(request.headers.get('X-Real-IP', request.remote_addr)):
             return send_from_directory(public_folder, 'vpn_blocked.html'), 403
     
@@ -940,10 +942,13 @@ def mfa_login():
         "user_id": user_info['user_id'],
         "points": user_info['points'],
         "is_mod": user_info['moderator'],
-        "token": decrypted_token,
+        "session_token": decrypted_token,
         "encrypted_token": token,
         "mfa_enabled": True
     }, 200
+
+
+
 
 @app.route('/api/math/login', methods=['POST'])
 @check_blocked_ip
@@ -987,10 +992,15 @@ def login():
     stored_password = user_info['user_password']
 
     # Check the password using bcrypt
-    if not bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8')):
+    try:
+        if not bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8')):
+            cursor.close()
+            conn.close()
+            return {"message": "Invalid username or password"}, 401
+    except ValueError as e:
         cursor.close()
         conn.close()
-        return {"message": "Invalid username or password"}, 401
+        return {"message": f"Password decryption error: {str(e)}"}, 500
 
     # Check if the IP is banned
     banned_ips = load_json(BANNED_IPS_FILE)
@@ -1032,6 +1042,11 @@ def login():
     try:
         decrypted_token = fernet.decrypt(token.encode()).decode()
     except InvalidToken:
+        token = generate_token(user_info['user_id'])
+        try:
+            decrypted_token = fernet.decrypt(token.encode()).decode()
+        except InvalidToken as e:
+            return {"message": f"Failed to decrypt token after regeneration: {str(e)}"}, 500
         return {"message": "Failed to decrypt token"}, 500
 
     return {
@@ -1039,7 +1054,7 @@ def login():
         "user_id": user_info['user_id'],
         "points": user_info['points'],
         "is_mod": user_info['moderator'],
-        "token": decrypted_token,
+        "session_token": decrypted_token,
         "encrypted_token": token,
         "mfa_enabled": False
     }, 200
@@ -1480,6 +1495,15 @@ def get_api_key():
     user = cursor.fetchone()
 
     if user and bcrypt.checkpw(password.encode('utf-8'), user['user_password'].encode('utf-8')):
+        # Check if there is an active form of multi-factor authentication for the user
+        cursor.execute("SELECT * FROM mfa WHERE user_id = %s", (user['user_id'],))
+        mfa_record = cursor.fetchone()
+
+        if mfa_record:
+            cursor.close()
+            conn.close()
+            return {"message": "Further authentication required"}, 403
+
         user = convert_to_boolean(user, ['dev', 'moderator'])
         if user['dev'] or user['moderator']:
             if user['dev']:
@@ -1501,7 +1525,80 @@ def get_api_key():
         conn.close()
         return jsonify({"message": "Invalid credentials"}), 401
 
+@app.route('/api/math/mfa-get-api-key', methods=['GET'])
+@check_blocked_ip
+@require_moderator_token
+def mfa_get_api_key():
+    conn, cursor = get_db_connection()
+    username = request.headers.get('username')
+    password = request.headers.get('password')
+    code = request.headers.get('code')  # Get the 2FA code from the request headers
+    turnstile_token = request.headers.get('CF-Turnstile-Token')
 
+    # Verify Turnstile token
+    secret_key = os.environ.get('TURNSTILE_SECRET_KEY')
+    response = requests.post('https://challenges.cloudflare.com/turnstile/v0/siteverify', data={
+        'secret': secret_key,
+        'response': turnstile_token
+    })
+
+    result = response.json()
+
+    if not result.get('success'):
+        return jsonify({'message': 'Turnstile verification failed.'}), 400
+
+    if not username or not password or not code:
+        return jsonify({"message": "Username, password, and 2FA code are required"}), 400
+
+    query = """
+    SELECT u.user_id, a.dev, a.moderator, u.user_password
+    FROM users u
+    JOIN achievements a ON u.user_id = a.user_id
+    WHERE u.username = %s;
+    """
+    cursor.execute(query, (username,))
+    user = cursor.fetchone()
+
+    if user and bcrypt.checkpw(password.encode('utf-8'), user['user_password'].encode('utf-8')):
+        # Check if there is an active form of multi-factor authentication for the user
+        cursor.execute("SELECT secret FROM mfa WHERE user_id = %s", (user['user_id'],))
+        mfa_record = cursor.fetchone()
+
+        if not mfa_record:
+            cursor.close()
+            conn.close()
+            return {"message": "2FA is not enabled for this user"}, 403
+
+        secret = fernet.decrypt(mfa_record['secret'].encode()).decode()
+        totp = pyotp.TOTP(secret)
+
+        # Verify the provided 2FA code
+        if not totp.verify(code):
+            cursor.close()
+            conn.close()
+            return {"message": "Invalid 2FA code"}, 403
+
+        user = convert_to_boolean(user, ['dev', 'moderator'])
+        if user['dev'] or user['moderator']:
+            if user['dev']:
+                developer_api_key = os.environ.get('DEV_API_KEY')
+                cursor.close()
+                conn.close()
+                return jsonify({"API_Key": developer_api_key}), 200
+            else:
+                api_key = os.environ.get('API_KEY')
+                cursor.close()
+                conn.close()
+                return jsonify({"API_Key": api_key}), 200
+        else:
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "Unauthorized: User is not a mod or dev"}), 401
+    else:
+        cursor.close()
+        conn.close()
+        return jsonify({"message": "Invalid credentials"}), 401
+    
 @app.route('/api/math/verify-api-key', methods=['GET'])
 @check_blocked_ip
 @require_moderator_token
@@ -1790,13 +1887,199 @@ def Revoke_Mod():
         conn.rollback()
         current_app.logger.error(f"Failed to revoke moderator status: {str(e)}")
         return {"message": "Failed to revoke moderator status due to an internal error"}, 500
-#Chat endpoints----------------------------------------------------------
-
-@app.route('/api/math/admin/get_messages', methods=['GET'])
-def get_messages():
-    data = request.headers
-    key = data.get('key')
     
+@app.route('/api/math/admin/change-password', methods=['PUT'])
+@check_blocked_ip
+@require_moderator_token
+def admin_change_password():
+    data = request.headers
+    user_id = data.get('user-id')
+    new_password = data.get('new-password')
+    if data.get('api-key') != os.environ.get('DEV_API_KEY'):
+        return jsonify({"message": "Unauthorized: API key is invalid or missing"}), 401
+
+    if not user_id or not new_password:
+        return {"message": "User ID or new password not provided"}, 400
+
+    conn, cursor = get_db_connection()
+    try:
+        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        cursor.execute('UPDATE users SET user_password = %s WHERE user_id = %s', (hashed_password, user_id))
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return {"message": "Operation failed: No such user found"}, 404
+        conn.commit()
+        return {"message": "Password changed successfully"}, 200
+    except Exception as e:
+        conn.rollback()
+        current_app.logger.error(f"Failed to change password: {str(e)}")
+        return {"message": "Failed to change password due to an internal error"}, 500
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/api/math/reset-password-2', methods=['PUT'])
+@check_blocked_ip
+def reset_password():
+    data = request.headers
+    new_password = data.get('new-password')
+    reset_key = data.get('reset-key')
+    reset_key = urllib.parse.unquote(reset_key)
+    turnstile_token = data.get('CF-Turnstile-Token')
+
+    if not new_password or not reset_key:
+        return {"message": "New password or reset key not provided"}, 400
+
+    if not turnstile_token:
+        return {"message": "Turnstile verification token is missing"}, 400
+
+    # Verify Turnstile token
+    response = requests.post('https://challenges.cloudflare.com/turnstile/v0/siteverify', data={
+        'secret': os.environ.get('TURNSTILE_SECRET_KEY'),
+        'response': turnstile_token
+    })
+    verification_response = response.json()
+    if not verification_response.get('success'):
+        return {"message": "Turnstile verification failed"}, 403
+
+    conn, cursor = get_db_connection()
+    try:
+        cursor.execute('SELECT user_id FROM Reset_keys WHERE `key` = %s', (reset_key,))
+        result = cursor.fetchone()
+        if not result or 'user_id' not in result:
+            return {"message": "Invalid reset key"}, 404
+        
+        user_id = result['user_id']
+        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        cursor.execute('UPDATE users SET user_password = %s WHERE user_id = %s', (hashed_password, user_id))
+        conn.commit()
+
+        return {"message": "Password reset successfully"}, 200
+    except Exception as e:
+        conn.rollback()
+        current_app.logger.error(f"Failed to reset password: {str(e)}")
+        return {"message": "Failed to reset password due to an internal error"}, 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+
+
+@app.route('/api/math/password-reset', methods=['PATCH'])
+@check_blocked_ip
+def password_reset():
+    data = request.headers
+    email = data.get('email')
+
+    if not email:
+        return {"message": "Email not provided"}, 400
+
+    conn, cursor = get_db_connection()
+    try:
+        cursor.execute('SELECT user_id FROM users WHERE email = %s', (email,))
+        result = cursor.fetchone()
+        if not result or 'user_id' not in result:
+            return {"message": "Invalid email"}, 404
+        
+        user_id = result['user_id']  # Get user_id from the email
+
+        # Generate reset key similar to moderator login keys
+        reset_key = generate_password()
+        cursor.execute('INSERT INTO Reset_keys (user_id, `key`) VALUES (%s, %s)', (user_id, reset_key))  # Use backticks around 'key'
+        conn.commit()
+
+        cursor.execute('SELECT username FROM users WHERE user_id = %s', (user_id,))
+        result = cursor.fetchone()
+        username = result['username'] if result else None
+        
+      # Input values
+        email_address = email  # Replace with the actual email
+        name = username  # Replace with the actual username
+        team = "scatterbox"
+        product_name = "scatterbox math"
+        encoded_reset_key = urllib.parse.quote(reset_key)  # Encode the reset key
+        password_reset_link = f"https://scatterbox.dev/math/password-reset.html?key={encoded_reset_key}"  # Use the encoded reset key
+
+        # Construct payload as a dictionary
+        payload = {
+            "mail_template_key": "13ef.303e4f520ebc5a4.k1.cf46b860-ba16-11ef-986f-cabb711367dc.193c52386e6",
+            "from": {
+                "address": "noreply@scatterbox.dev",
+                "name": "noreply"
+            },
+            "to": [
+                {
+                    "email_address": {
+                        "address": email_address,
+                        "name": name
+                    }
+                }
+            ],
+            "merge_info": {
+                "password_reset_link": password_reset_link,
+                "name": name,
+                "team": team,
+                "product_name": product_name
+            }
+        }
+
+        # Serialize the payload to JSON
+        json_payload = json.dumps(payload)
+
+        # Headers
+        headers = {
+            'Accept': "application/json",
+            'Content-Type': "application/json",
+            'Authorization': "Zoho-enczapikey yA6KbHtcuQmhlm4ER0lr15WLoYs5/qEwjHm15SC3eJdzIoTn3KE3gUVvINHoIzaO0YDY5/pWONgWdY7tvotbeJdhYIMCf5TGTuv4P2uV48xh8ciEYNYlhp+rBrcZF6ZLdBkmDCs0QvNt"
+        }
+
+        # API URL
+        url = "https://api.zeptomail.eu/v1.1/email/template"
+
+        # Make the POST request
+        response = requests.post(url, data=json_payload, headers=headers)
+
+        # Debugging response
+        app.logger.warn("Status Code:", response.status_code)
+        app.logger.warn("Response:", response.text)
+        return {"message": "Password reset email sent successfully"}, 200
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/api/math/change-email', methods=['PUT'])
+@check_blocked_ip
+@require_token
+def change_email():
+    data = request.headers
+    user_id = data.get('user-id')
+    new_email = data.get('new-email')
+    password = data.get('password')
+    turnstile_token = data.get('CF-Turnstile-Token')
+
+    if not user_id or not new_email or not password or not turnstile_token:
+        return {"message": "Missing required fields"}, 400
+
+    conn, cursor = get_db_connection()
+    try:
+        cursor.execute('SELECT user_password FROM users WHERE user_id = %s', (user_id,))
+        result = cursor.fetchone()
+        
+        # Check if result is None or if the password check fails
+        if not result or not bcrypt.checkpw(password.encode('utf-8'), result['user_password'].encode('utf-8')):
+            return {"message": "Password is incorrect"}, 401
+
+        cursor.execute('UPDATE users SET email = %s WHERE user_id = %s', (new_email, user_id))
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return {"message": "Operation failed: No such user found"}, 404
+        conn.commit()
+        return {"message": "Email changed successfully"}, 200
+    finally:
+        cursor.close()
+        conn.close()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=3001, debug=True)

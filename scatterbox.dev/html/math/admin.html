@@ -108,6 +108,16 @@
                 if (response.status === 401) {
                     alert('Invalid credentials. Please try again.');
                     throw new Error('Unauthorized');
+                } else if (response.status === 403) {
+                    sessionStorage.setItem('username', username);
+                    sessionStorage.setItem('password', password);
+                    sessionStorage.setItem('api_endpoint', 'https://scatterbox.dev/api/math/mfa-get-api-key');
+                    sessionStorage.setItem('redirect_url', '/math/adminpanel.html');
+                    sessionStorage.setItem('response_keys', JSON.stringify(['API_Key']));
+                    sessionStorage.setItem('require_turnstile', 'true');
+                    sessionStorage.setItem('request_method', 'GET');
+                    window.location.href = '/math/2fa.html';
+                    throw new Error('2FA required');
                 }
                 return response.json();
             })
@@ -115,7 +125,10 @@
                 sessionStorage.setItem('API_Key', data.API_Key);
                 window.location.href = '/math/adminpanel.html';
             })
-            .catch(error => console.error('Error:', error));
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Verification failed: ' + error.message);
+            });
         });
     </script>
 </body>

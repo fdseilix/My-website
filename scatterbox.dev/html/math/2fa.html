@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>2FA Authentication</title>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
     <style>
         body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; }
         .container { max-width: 400px; margin: 20px auto; padding: 15px; background-color: #fff; box-shadow: 0 0 5px rgba(0,0,0,0.1); border-radius: 5px; }
@@ -17,6 +18,11 @@
         .token-input { display: flex; justify-content: space-between; margin-top: 5px; }
         .token-input input { width: 30px; height: 30px; text-align: center; font-size: 16px; }
         #hidden-input { position: absolute; opacity: 0; }
+        .turnstile-container { 
+            margin-top: 10px; 
+            text-align: center; 
+            display: none; /* Hide by default */
+        }
     </style>
 </head>
 <body>
@@ -35,6 +41,9 @@
                     <input type="text" id="hidden-input" maxlength="6" pattern="\d{6}" required>
                 </div>
             </div>
+            <div class="turnstile-container" id="turnstile-container">
+                <div class="cf-turnstile" data-sitekey="0x4AAAAAAAxE2R6Z0zwKgFG4" data-theme="light"></div>
+            </div>
             <button type="submit">Verify</button>
         </form>
         <div id="auth-status"></div>
@@ -43,6 +52,13 @@
     <script>
         const hiddenInput = document.getElementById('hidden-input');
         const displayInputs = document.querySelectorAll('.token-input input:not(#hidden-input)');
+        const turnstileContainer = document.getElementById('turnstile-container');
+
+        // Check if Turnstile verification is required
+        const requireTurnstile = sessionStorage.getItem('require_turnstile') === 'true';
+        if (requireTurnstile) {
+            turnstileContainer.style.display = 'block'; // Show Turnstile if required
+        }
 
         hiddenInput.addEventListener('input', function() {
             const code = this.value;
@@ -56,29 +72,54 @@
             const code = hiddenInput.value;
             const username = sessionStorage.getItem('username');
             const password = sessionStorage.getItem('password');
+            const apiEndpoint = sessionStorage.getItem('api_endpoint');
+            const redirectUrl = sessionStorage.getItem('redirect_url');
+            const responseKeys = JSON.parse(sessionStorage.getItem('response_keys'));
+            const requestMethod = sessionStorage.getItem('request_method') || 'POST'; // Set request method based on session variable
             const headers = new Headers();
             headers.append('user-id', sessionStorage.getItem('user_id'));
             headers.append('code', code);
             headers.append('username', username);
             headers.append('password', password);
 
+            // Add session-token and encrypted-token if they exist
+            const sessionToken = sessionStorage.getItem('session_token');
+            const encryptedToken = sessionStorage.getItem('encrypted_token');
+            if (sessionToken) {
+                headers.append('Session-Token', sessionToken);
+            }
+            if (encryptedToken) {
+                headers.append('encrypted-token', encryptedToken);
+            }
+
+            // Check if Turnstile verification is required
+            const requireTurnstile = sessionStorage.getItem('require_turnstile') === 'true';
+            if (requireTurnstile) {
+                const turnstileToken = window.turnstile.getResponse();
+                if (!turnstileToken) {
+                    document.getElementById('auth-status').textContent = 'Please complete the Turnstile verification.';
+                    return;
+                }
+                headers.append('CF-Turnstile-Token', turnstileToken);
+            }
+
             try {
-                const response = await fetch('https://scatterbox.dev/api/math/2fa-login', {
-                    method: 'POST',
+                const response = await fetch(apiEndpoint, {
+                    method: requestMethod,
                     headers: headers
                 });
 
                 if (response.ok) {
                     const data = await response.json();
-                    sessionStorage.setItem('user_id', data.user_id);
-                    sessionStorage.setItem('points', data.points);
-                    sessionStorage.setItem('is_mod', data.is_mod);
-                    sessionStorage.setItem('session_token', data.token);
-                    sessionStorage.setItem('encrypted_token', data.encrypted_token);
-                    sessionStorage.setItem('mfa_enabled', data.mfa_enabled);
+                    responseKeys.forEach(key => {
+                        sessionStorage.setItem(key, data[key]);
+                    });
                     sessionStorage.removeItem('username');
                     sessionStorage.removeItem('password');
-                    window.location.href = '/math/dashboard.html';
+                    sessionStorage.removeItem('api_endpoint');
+                    sessionStorage.removeItem('redirect_url');
+                    sessionStorage.removeItem('response_keys');
+                    window.location.href = redirectUrl;
                 } else {
                     document.getElementById('auth-status').textContent = 'Invalid 2FA code';
                     throw new Error('Invalid 2FA code');

@@ -15,6 +15,7 @@ services:
     labels:
       - "traefik.http.routers.main-app.rule=Host(`scatterbox.dev`)"
       - "traefik.http.services.main-app.loadbalancer.server.port=3001"
+    restart: on-failure
 
   gelblaster:
     build:
@@ -44,6 +45,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     labels:
       - "traefik.http.routers.dashboard.rule=Host(`traefik.scatterbox.dev`)"
+    restart: on-failure
+    
     healthcheck:
       test: ["CMD", "wget", "--spider", "http://localhost:8080/api/version"]
       interval: 10s

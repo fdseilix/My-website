@@ -179,6 +179,7 @@
                                       <div class="actions">
                                           <button class="manage-btn" onclick="lockUser('${userDetail.user_id}')">Lock User</button>
                                           <button class="manage-btn" onclick="unlockUser('${userDetail.user_id}')">Unlock User</button>
+                                          <button class="manage-btn" onclick="changePassword('${userDetail.user_id}')">Change Password</button>
                                           <button class="manage-btn" onclick="deleteUser('${userDetail.user_id}')">Delete User</button>
                                           <button class="manage-btn" onclick="wipeUser('${userDetail.user_id}')">Wipe User</button>
                                           <button class="manage-btn" onclick="addPoints('${userDetail.user_id}')">Add points</button>
@@ -199,12 +200,12 @@
         function addPoints(userId) {
             const apiKey = sessionStorage.getItem('API_Key');
             let pointsToAdd = prompt("How many points to add?");
-            performAction('mod-add-point', userId, pointsToAdd, 'Points have been added to the user', 'POST');
+            performAction('mod-add-point', userId, pointsToAdd, "", 'Points have been added to the user', 'POST');
         }
 
         function wipeUser(userId) {
             const apiKey = sessionStorage.getItem('API_Key');
-            performAction('wipe', userId, 0, 'User data has been wiped.', 'POST');
+            performAction('wipe', userId, 0, "", 'User data has been wiped.', 'POST');
         }
 
         function generateLink(userId) {
@@ -241,38 +242,48 @@
         }
 
         function GrantMod(userId) {
-            performAction('GrantMod', userId, 0, 'Moderator has been granted', 'PATCH');
+            performAction('GrantMod', userId, 0, "", 'Moderator has been granted', 'PATCH');
         }
 
         function RevokeMod(userId) {
-            performAction('RevokeMod', userId, 0, 'Moderator has been revoked', 'PATCH');
+            performAction('RevokeMod', userId, 0, "", 'Moderator has been revoked', 'PATCH');
         }
 
         function lockUser(userId) {
-            performAction('lock', userId, 0, 'User has been locked.', 'PATCH');
+            performAction('lock', userId, 0, "", 'User has been locked.', 'PATCH');
         }
 
         function unlockUser(userId) {
-            performAction('unlock', userId, 0, 'User has been unlocked.', 'PATCH');
+            performAction('unlock', userId, 0, "", 'User has been unlocked.', 'PATCH');
         }
 
         function deleteUser(userId) {
-            performAction('delete', userId, 0, 'User has been deleted.', 'DELETE');
+            performAction('delete', userId, 0, "", 'User has been deleted.', 'DELETE');
         }
 
-        function performAction(actionEndpoint, userId, points, successMessage, method) {
+        function changePassword(userId) {
+            const newPassword = prompt('Please enter the new password:');
+            if (newPassword) {
+                performAction('admin/change-password', userId, 0, newPassword, 'Password has been changed.', 'PUT');
+            } else {
+                alert('Password change cancelled.');
+            }
+        }
+
+        function performAction(actionEndpoint, userId, points, newPassword, successMessage, method) {
             const fetchOptions = {
                 method: method,
                 headers: {
                     'api-key': sessionStorage.getItem('API_Key'),
                     'user-id': userId,
                     'points': points,
+                    'new-password': newPassword,
                     'session-token': sessionStorage.getItem('session_token'),
                     'encrypted-token': sessionStorage.getItem('encrypted_token')
                 }
             };
             if (method !== 'GET' && method !== 'HEAD') {
-                fetchOptions.body = JSON.stringify({ user_id: userId, points: points });
+                fetchOptions.body = JSON.stringify({ user_id: userId, points: points, new_password: newPassword });
                 fetchOptions.headers['Content-Type'] = 'application/json';
             }
             fetch(`https://scatterbox.dev/api/math/${actionEndpoint}`, fetchOptions)
