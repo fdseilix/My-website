@@ -2,7 +2,6 @@
 
 # Web Framework
 Flask==2.2.5
-urllib
 
 # Database
 mysql-connector-python==9.1.0
@@ -28,3 +27,7 @@ python-dotenv==0.19.2
 
 # CORS
 flask-cors==4.0.2
+
+# OAuth
+google-auth-oauthlib==1.0.0
+google-auth==2.22.0

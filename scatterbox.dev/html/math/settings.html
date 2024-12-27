@@ -100,6 +100,8 @@
   <button id="name-change-btn" class="button">Change Username</button>
   <button id="password-change-btn" class="button">Change Password</button>
   <button id="email-change-btn" class="button">Change Email</button>
+  <button id="link-google-btn" class="button">Link Google Account</button>
+  <button id="link-discord-btn" class="button">Link Discord Account</button>
   <script>
     window.addEventListener('load', function() {
       if (sessionStorage.getItem('mfa_enabled') === 'false') {
@@ -135,6 +137,59 @@
         overlay.style.display = 'block';
         document.body.style.backgroundColor = 'rgba(0, 0, 0, 0.4)';
       });
+
+      // Add Google account linking functionality
+      document.getElementById('link-google-btn').addEventListener('click', function() {
+        fetch('https://scatterbox.dev/api/math/oauth/google/link/start', {
+          method: 'GET',
+          headers: {
+            'user-id': sessionStorage.getItem('user_id'),
+            'Session-Token': sessionStorage.getItem('session_token'),
+            'encrypted-token': sessionStorage.getItem('encrypted_token')
+          }
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data.authorization_url) {
+            window.location.href = data.authorization_url;
+          }
+        })
+        .catch(error => {
+          console.error('Error:', error);
+          alert('Failed to start Google account linking');
+        });
+      });
+
+      // Add Discord account linking functionality
+      document.getElementById('link-discord-btn').addEventListener('click', function() {
+        fetch('https://scatterbox.dev/api/math/oauth/discord/link/start', {
+          method: 'GET',
+          headers: {
+            'user-id': sessionStorage.getItem('user_id'),
+            'Session-Token': sessionStorage.getItem('session_token'),
+            'encrypted-token': sessionStorage.getItem('encrypted_token')
+          }
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data.authorization_url) {
+            window.location.href = data.authorization_url;
+          }
+        })
+        .catch(error => {
+          console.error('Error:', error);
+          alert('Failed to start Discord account linking');
+        });
+      });
+
+      // Check URL parameters for success message
+      const urlParams = new URLSearchParams(window.location.search);
+      const message = urlParams.get('message');
+      if (message) {
+        alert(message);
+        // Remove the message from the URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
     });
   </script>
 

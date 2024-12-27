@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Complete Google Sign Up</title>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <style>
+    body, html {
+      height: 100%;
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: Arial, sans-serif;
+      background-color: #f0f0f0;
+    }
+
+    .signup-container {
+      width: 300px;
+      text-align: center;
+      padding: 20px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      border-radius: 5px;
+      background: #FFFFFF;
+    }
+
+    .signup-container h1 {
+      font-size: 2em;
+      margin-bottom: 20px;
+    }
+
+    .signup-container input {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      margin: 10px auto;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      box-sizing: border-box;
+    }
+
+    .signup-container button {
+      display: block;
+      width: 200px;
+      padding: 10px;
+      margin: 10px auto;
+      font-size: 18px;
+      cursor: pointer;
+      border-radius: 5px;
+      background-color: #4285f4;
+      color: white;
+      border: none;
+    }
+
+    .signup-container button:hover {
+      background-color: #357abd;
+    }
+
+    .turnstile-container {
+      margin: 20px 0;
+    }
+
+    #signup-status {
+      color: red;
+      margin-top: 10px;
+    }
+
+    .email-display {
+      margin: 10px 0;
+      padding: 10px;
+      background-color: #f8f9fa;
+      border-radius: 5px;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="signup-container">
+    <h1>Complete Sign Up</h1>
+    <div class="email-display" id="email-display"></div>
+    <input type="text" id="username" placeholder="Choose Username">
+    <input type="password" id="password" placeholder="Choose Password">
+    
+    <div class="turnstile-container">
+      <div class="cf-turnstile" data-sitekey="0x4AAAAAAAxE2R6Z0zwKgFG4" data-theme="light"></div>
+    </div>
+    
+    <button id="complete-signup">Complete Sign Up</button>
+    <p id="signup-status"></p>
+  </div>
+
+  <script>
+    // Get Google credentials from URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    const googleToken = urlParams.get('google_token');
+    const email = urlParams.get('email');
+    
+    // Display email
+    document.getElementById('email-display').textContent = email;
+
+    document.getElementById('complete-signup').addEventListener('click', function() {
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const turnstileToken = window.turnstile.getResponse();
+      
+      if (!turnstileToken) {
+        document.getElementById('signup-status').textContent = 'Please complete the verification.';
+        return;
+      }
+
+      if (!username.trim() || !password.trim()) {
+        document.getElementById('signup-status').textContent = 'Please fill in all fields.';
+        return;
+      }
+
+      const headers = new Headers();
+      headers.append('Username', username);
+      headers.append('Password', password);
+      headers.append('Google-Token', googleToken);
+      headers.append('CF-Turnstile-Token', turnstileToken);
+
+      fetch('https://scatterbox.dev/api/math/oauth/google/signup', {
+        method: 'POST',
+        headers: headers
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.message === "Account created successfully") {
+          document.getElementById('signup-status').style.color = 'green';
+          document.getElementById('signup-status').textContent = 'Account created successfully! Redirecting to login...';
+          setTimeout(() => {
+            window.location.href = '/math/login.html';
+          }, 2000);
+        } else {
+          document.getElementById('signup-status').textContent = data.message;
+        }
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        document.getElementById('signup-status').textContent = 'An error occurred. Please try again.';
+      });
+    });
+  </script>
+</body>
+</html> 

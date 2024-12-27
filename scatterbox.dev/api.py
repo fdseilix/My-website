@@ -34,7 +34,67 @@ import io
 import threading
 import urllib
 
+# Google OAuth imports
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
+
 load_dotenv('/var/sites/.env')
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
+GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
+GOOGLE_REDIRECT_URI = 'https://scatterbox.dev/api/math/oauth/google/callback'
+GOOGLE_LINK_REDIRECT_URI = 'https://scatterbox.dev/api/math/oauth/google/link/callback'
+
+# Discord OAuth Configuration
+API_ENDPOINT = 'https://discord.com/api/v10'
+CLIENT_ID = '1322216623461105734'
+CLIENT_SECRET = os.environ.get('DISCORD_CLIENT_SECRET')
+REDIRECT_URI = 'https://scatterbox.dev/api/math/oauth/discord/callback'
+REDIRECT_URI2 = 'https://scatterbox.dev/api/math/oauth/discord/link/callback'
+
+def exchange_code(code, redirect_uri=REDIRECT_URI):
+  data = {
+    'grant_type': 'authorization_code',
+    'code': code,
+    'redirect_uri': redirect_uri
+  }
+  headers = {
+    'Content-Type': 'application/x-www-form-urlencoded'
+  }
+  r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers, auth=(CLIENT_ID, CLIENT_SECRET))
+  r.raise_for_status()
+  return r.json()
+
+def refresh_token(refresh_token):
+  data = {
+    'grant_type': 'refresh_token',
+    'refresh_token': refresh_token
+  }
+  headers = {
+    'Content-Type': 'application/x-www-form-urlencoded'
+  }
+  r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers, auth=(CLIENT_ID, CLIENT_SECRET))
+  r.raise_for_status()
+  return r.json()
+
+def create_oauth_flow(redirect_uri):
+    """Create a new OAuth flow instance with the specified redirect URI"""
+    return Flow.from_client_config(
+        {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [GOOGLE_REDIRECT_URI, GOOGLE_LINK_REDIRECT_URI]
+            }
+        },
+        scopes=['openid', 'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile'],
+        redirect_uri=redirect_uri
+    )
 
 # Ensure necessary files and directories exist
 def ensure_file_exists(file_path, default_content=None):
@@ -79,10 +139,14 @@ public_folder = '/var/sites/scatterbox.dev/html'
 app = Flask('app')
 CORS(app)
 
+# Set the secret key from environment variable
+app.secret_key = os.environ.get('SECRET_KEY')
+if not app.secret_key:
+    raise ValueError("No SECRET_KEY set in environment variables")
+
 # Define the path to the JSON file
 MAINTENANCE_FILE = 'var/Site-resources/json/scatterbox.dev/maintenance.json'
 
-app.secret_key = os.environ.get('SECRET_KEY')
 blocked_ips = [
     
 ]
@@ -2080,6 +2144,755 @@ def change_email():
     finally:
         cursor.close()
         conn.close()
+
+@app.route('/api/math/oauth/google/start', methods=['GET'])
+@check_blocked_ip
+def start_google_oauth():
+    """Start the Google OAuth flow"""
+    flow = create_oauth_flow(GOOGLE_REDIRECT_URI)
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true',
+        prompt='consent'
+    )
+    session['oauth_state'] = state
+    session['flow_redirect_uri'] = GOOGLE_REDIRECT_URI
+    return jsonify({"authorization_url": authorization_url}), 200
+
+@app.route('/api/math/oauth/google/login', methods=['GET'])
+@check_blocked_ip
+def google_oauth_callback1():
+    """Handle the Google OAuth callback"""
+    try:
+        # Get the authorization code from the callback
+        code = request.args.get('code')
+        if not code:
+            return jsonify({"message": "No authorization code received"}), 400
+
+        # Create flow with the stored redirect URI
+        flow = create_oauth_flow(GOOGLE_REDIRECT_URI)
+
+        # Exchange the authorization code for credentials
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+
+        # Get user info from Google
+        userinfo_response = requests.get(
+            'https://www.googleapis.com/oauth2/v3/userinfo',
+            headers={'Authorization': f'Bearer {credentials.token}'}
+        )
+        userinfo = userinfo_response.json()
+
+        if not userinfo.get('email_verified'):
+            return jsonify({"message": "Google account email not verified"}), 400
+
+        email = userinfo['email']
+        name = userinfo.get('name', email.split('@')[0])
+
+        # Check if user exists
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+
+        if not user:
+            # Create new user
+            user_id = math.floor(random.randint(1000000000, 9999999999))
+            password = generate_password()  # Generate a random password
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+            # Insert new user
+            cursor.execute(
+                "INSERT INTO users (username, user_password, user_id, email) VALUES (%s, %s, %s, %s)",
+                (name, hashed_password, user_id, email)
+            )
+            cursor.execute(
+                "INSERT INTO achievements (user_id) VALUES (%s)",
+                (user_id,)
+            )
+            conn.commit()
+        else:
+            user_id = user['user_id']
+
+        # Generate session token
+        token = generate_token(user_id)
+
+        # Get user info
+        cursor.execute("""
+            SELECT u.points, a.moderator 
+            FROM users u
+            LEFT JOIN achievements a ON u.user_id = a.user_id
+            WHERE u.user_id = %s
+        """, (user_id,))
+        user_info = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        try:
+            decrypted_token = fernet.decrypt(token.encode()).decode()
+        except InvalidToken:
+            return jsonify({"message": "Failed to generate secure token"}), 500
+
+        # Return success response with tokens and user info
+        response_data = {
+            "message": "Successfully authenticated with Google",
+            "user_id": user_id,
+            "points": user_info['points'],
+            "is_mod": bool(user_info['moderator']),
+            "session_token": decrypted_token,
+            "encrypted_token": token,
+            "mfa_enabled": False
+        }
+
+        # Redirect to dashboard with parameters
+        params = urllib.parse.urlencode(response_data)
+        return redirect(f'/math/dashboard.html?{params}')
+
+    except Exception as e:
+        app.logger.error(f"Google OAuth error: {str(e)}")
+        return jsonify({"message": "Authentication failed"}), 500
+
+@app.route('/api/math/oauth/google/link/start', methods=['GET'])
+@check_blocked_ip
+@require_token
+def start_google_link():
+    """Start the Google OAuth flow for linking an account"""
+    user_id = request.headers.get('user-id')
+    if not user_id:
+        return jsonify({"message": "User ID is required"}), 400
+
+    # Store the user_id in session for the callback
+    session['linking_user_id'] = user_id
+    
+    flow = create_oauth_flow(GOOGLE_LINK_REDIRECT_URI)
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true',
+        prompt='consent'
+    )
+    session['oauth_state'] = state
+    session['flow_redirect_uri'] = GOOGLE_LINK_REDIRECT_URI
+    return jsonify({"authorization_url": authorization_url}), 200
+
+@app.route('/api/math/oauth/google/link/callback', methods=['GET'])
+@check_blocked_ip
+def google_link_callback():
+    """Handle the Google OAuth callback for account linking"""
+    try:
+        # Get the user_id from session
+        user_id = session.get('linking_user_id')
+        if not user_id:
+            return jsonify({"message": "No user ID found in session"}), 400
+
+        # Get the authorization code from the callback
+        code = request.args.get('code')
+        if not code:
+            return jsonify({"message": "No authorization code received"}), 400
+
+        # Exchange the authorization code for credentials
+        flow = create_oauth_flow(GOOGLE_LINK_REDIRECT_URI)  # Create flow instance
+        flow.redirect_uri = GOOGLE_LINK_REDIRECT_URI  # Explicitly set the redirect URI
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+
+        # Get user info from Google
+        userinfo_response = requests.get(
+            'https://www.googleapis.com/oauth2/v3/userinfo',
+            headers={'Authorization': f'Bearer {credentials.token}'}
+        )
+        userinfo = userinfo_response.json()
+
+        if not userinfo.get('email_verified'):
+            return jsonify({"message": "Google account email not verified"}), 400
+
+        email = userinfo['email']
+
+        # Check if the Google account is already linked to another user
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT user_id FROM users WHERE email = %s AND user_id != %s", (email, user_id))
+        existing_link = cursor.fetchone()
+
+        if existing_link:
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "This Google account is already linked to another user"}), 400
+
+        # Update the user's email
+        cursor.execute("UPDATE users SET email = %s WHERE user_id = %s", (email, user_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Clear the session
+        session.pop('linking_user_id', None)
+        session.pop('oauth_state', None)
+
+        # Redirect to settings page with success message
+        return redirect('/math/settings.html?message=Google account linked successfully')
+
+    except Exception as e:
+        app.logger.error(f"Google account linking error: {str(e)}")
+        return jsonify({"message": "Failed to link Google account"}), 500
+
+@app.route('/api/math/oauth/google/signup', methods=['POST'])
+@check_blocked_ip
+def google_signup():
+    """Handle Google account signup with custom username"""
+    try:
+        username = request.headers.get('Username')
+        password = request.headers.get('Password')
+        google_token = request.headers.get('Google-Token')
+        turnstile_token = request.headers.get('CF-Turnstile-Token')
+
+        if not username or not password or not google_token or not turnstile_token:
+            return jsonify({"message": "Missing required fields"}), 400
+
+        # Verify Turnstile token
+        response = requests.post('https://challenges.cloudflare.com/turnstile/v0/siteverify', data={
+            'secret': os.environ.get('TURNSTILE_SECRET_KEY'),
+            'response': turnstile_token
+        })
+        if not response.json().get('success'):
+            return jsonify({"message": "Turnstile verification failed"}), 400
+
+        # Get user info from Google
+        userinfo_response = requests.get(
+            'https://www.googleapis.com/oauth2/v3/userinfo',
+            headers={'Authorization': f'Bearer {google_token}'}
+        )
+        userinfo = userinfo_response.json()
+
+        if not userinfo.get('email_verified'):
+            return jsonify({"message": "Google account email not verified"}), 400
+
+        email = userinfo['email']
+
+        # Check if email already exists
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "Email already registered"}), 400
+
+        # Check if username exists
+        cursor.execute("SELECT user_id FROM users WHERE username = %s", (username,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "Username already taken"}), 400
+
+        # Create new user
+        user_id = math.floor(random.randint(1000000000, 9999999999))
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+        cursor.execute(
+            "INSERT INTO users (username, user_password, user_id, email) VALUES (%s, %s, %s, %s)",
+            (username, hashed_password, user_id, email)
+        )
+        cursor.execute(
+            "INSERT INTO achievements (user_id) VALUES (%s)",
+            (user_id,)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "message": "Account created successfully",
+            "user_id": user_id
+        }), 201
+
+    except Exception as e:
+        app.logger.error(f"Google signup error: {str(e)}")
+        return jsonify({"message": "Failed to create account"}), 500
+
+@app.route('/api/math/oauth/google/callback', methods=['GET'])
+@check_blocked_ip
+def google_oauth_callback():
+    """Handle the Google OAuth callback"""
+    try:
+        code = request.args.get('code')
+        if not code:
+            return jsonify({"message": "No authorization code received"}), 400
+
+        redirect_uri = session.get('flow_redirect_uri')
+        if not redirect_uri:
+            return jsonify({"message": "No redirect URI found in session"}), 400
+
+        flow = create_oauth_flow(redirect_uri)
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+
+        userinfo_response = requests.get(
+            'https://www.googleapis.com/oauth2/v3/userinfo',
+            headers={'Authorization': f'Bearer {credentials.token}'}
+        )
+        userinfo = userinfo_response.json()
+
+        if not userinfo.get('email_verified'):
+            return jsonify({"message": "Google account email not verified"}), 400
+
+        email = userinfo['email']
+
+        # Check if user exists
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+
+        if not user:
+            # Redirect to signup page with Google token
+            params = urllib.parse.urlencode({
+                'google_token': credentials.token,
+                'email': email,
+                'name': userinfo.get('name', '')
+            })
+            return redirect(f'/math/google_signup.html?{params}')
+
+        user_id = user['user_id']
+
+        # Check for 2FA
+        cursor.execute("SELECT * FROM mfa WHERE user_id = %s", (user_id,))
+        mfa_record = cursor.fetchone()
+
+        if mfa_record:
+            # Store credentials in session and redirect to 2FA page
+            params = {
+                'google_token': credentials.token,
+                'user_id': user_id,
+                'api_endpoint': '/api/math/oauth/google/verify-2fa', 
+                'redirect_url': '/math/dashboard.html',
+                'request_method': 'POST',
+                'response_keys': json.dumps(['message', 'user_id', 'points', 'is_mod', 'session_token', 'encrypted_token', 'mfa_enabled']),
+                'redir': '/math/2fa.html'
+            }
+            params = urllib.parse.urlencode(params)
+            return redirect(f'/math/add_prams.html?{params}')
+
+        # Generate session token
+        token = generate_token(user_id)
+
+        # Get user info
+        cursor.execute("""
+            SELECT u.points, a.moderator 
+            FROM users u
+            LEFT JOIN achievements a ON u.user_id = a.user_id
+            WHERE u.user_id = %s
+        """, (user_id,))
+        user_info = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        try:
+            decrypted_token = fernet.decrypt(token.encode()).decode()
+        except InvalidToken:
+            return jsonify({"message": "Failed to generate secure token"}), 500
+
+        response_data = {
+            "message": "Successfully authenticated with Google",
+            "user_id": user_id,
+            "points": user_info['points'],
+            "is_mod": bool(user_info['moderator']),
+            "session_token": decrypted_token,
+            "encrypted_token": token,
+            "mfa_enabled": False,
+            "redir": "/math/dashboard.html"
+        }
+
+        params = urllib.parse.urlencode(response_data)
+        return redirect(f'/math/add_prams.html?{params}')
+
+    except Exception as e:
+        app.logger.error(f"Google OAuth error: {str(e)}")
+        return jsonify({"message": "Authentication failed"}), 500
+
+@app.route('/api/math/oauth/google/verify-2fa', methods=['POST'])
+@check_blocked_ip
+def verify_google_2fa():
+    """Verify 2FA code for Google OAuth login"""
+    try:
+        code = request.headers.get('code')
+        if not code:
+            return jsonify({"message": "2FA code is required"}), 400
+
+        google_creds = request.headers.get('googlecredentials')
+        if not google_creds:
+            return jsonify({"message": "No pending Google authentication"}), 400
+
+        try:
+            google_creds = json.loads(google_creds)
+            user_id = google_creds['user_id']
+        except (json.JSONDecodeError, KeyError):
+            return jsonify({"message": "Invalid Google credentials format"}), 400
+
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT secret FROM mfa WHERE user_id = %s", (user_id,))
+        mfa_record = cursor.fetchone()
+
+        if not mfa_record:
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "2FA not enabled for this account"}), 400
+
+        secret = fernet.decrypt(mfa_record['secret'].encode()).decode()
+        totp = pyotp.TOTP(secret)
+
+        if not totp.verify(code):
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "Invalid 2FA code"}), 400
+
+        # Get user info
+        cursor.execute("""
+            SELECT u.points, a.moderator 
+            FROM users u
+            LEFT JOIN achievements a ON u.user_id = a.user_id
+            WHERE u.user_id = %s
+        """, (user_id,))
+        user_info = cursor.fetchone()
+
+        # Generate session token
+        token = generate_token(user_id)
+
+        cursor.close()
+        conn.close()
+
+        # Clear the session
+        session.pop('google_credentials', None)
+
+        try:
+            decrypted_token = fernet.decrypt(token.encode()).decode()
+        except InvalidToken:
+            return jsonify({"message": "Failed to generate secure token"}), 500
+
+        return jsonify({
+            "message": "Successfully authenticated",
+            "user_id": user_id,
+            "points": user_info['points'],
+            "is_mod": bool(user_info['moderator']),
+            "session_token": decrypted_token,
+            "encrypted_token": token,
+            "mfa_enabled": True
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Google 2FA verification error: {str(e)}")
+        return jsonify({"message": "Authentication failed"}), 500
+
+@app.route('/api/math/oauth/discord/callback', methods=['GET'])
+@check_blocked_ip
+def discord_oauth_callback():
+    """Handle the Discord OAuth callback"""
+    try:
+        code = request.args.get('code')
+        if not code:
+            return jsonify({"message": "No authorization code received"}), 400
+        
+        token_data = exchange_code(code)
+        access_token = token_data['access_token']
+        
+        # Get user info from Discord API
+        headers = {
+            'Authorization': f'Bearer {access_token}'
+        }
+        user_response = requests.get(f'{API_ENDPOINT}/users/@me', headers=headers)
+        user_response.raise_for_status()
+        user_data = user_response.json()
+
+        discord_id = user_data.get('id')
+        email = user_data.get('email')
+
+        if not discord_id:
+            return jsonify({"message": "Could not get Discord user ID"}), 400
+
+        # Check if user exists by Discord ID or email
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT user_id FROM users WHERE discord_link_id = %s OR email = %s", (discord_id, email))
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not user:
+            # Redirect to signup page with Discord token
+            params = urllib.parse.urlencode({
+                'discord_token': access_token,
+                'email': email,
+                'name': user_data.get('username', '')
+            })
+            return redirect(f'/math/discord_signup.html?{params}')
+
+        user_id = user['user_id']
+
+        # Check for 2FA
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT * FROM mfa WHERE user_id = %s", (user_id,))
+        mfa_record = cursor.fetchone()
+
+        if mfa_record:
+            # Store credentials in session and redirect to 2FA page
+            params = {
+                'discord_token': access_token,
+                'user_id': user_id,
+                'api_endpoint': '/api/math/oauth/discord/verify-2fa',
+                'redirect_url': '/math/dashboard.html',
+                'request_method': 'POST',
+                'response_keys': json.dumps(['message', 'user_id', 'points', 'is_mod', 'session_token', 'encrypted_token', 'mfa_enabled']),
+                'redir': '/math/2fa.html'
+            }
+            cursor.close()
+            conn.close()
+            return redirect(f'/math/add_prams.html?{urllib.parse.urlencode(params)}')
+
+        # Generate session token
+        token = generate_token(user_id)
+
+        # Get user info
+        cursor.execute("""
+            SELECT u.points, a.moderator 
+            FROM users u
+            LEFT JOIN achievements a ON u.user_id = a.user_id
+            WHERE u.user_id = %s
+        """, (user_id,))
+        user_info = cursor.fetchone()
+
+        # Update Discord link ID if not already set
+        cursor.execute("UPDATE users SET discord_link_id = %s WHERE user_id = %s AND discord_link_id IS NULL", (discord_id, user_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        try:
+            decrypted_token = fernet.decrypt(token.encode()).decode()
+        except InvalidToken:
+            return jsonify({"message": "Failed to generate secure token"}), 500
+
+        response_data = {
+            "message": "Successfully authenticated with Discord",
+            "user_id": user_id,
+            "points": user_info['points'],
+            "is_mod": bool(user_info['moderator']),
+            "session_token": decrypted_token,
+            "encrypted_token": token,
+            "mfa_enabled": False,
+            "redir": "/math/dashboard.html"
+        }
+
+        return redirect(f'/math/add_prams.html?{urllib.parse.urlencode(response_data)}')
+
+    except Exception as e:
+        app.logger.error(f"Discord OAuth error: {str(e)}")
+        return jsonify({"message": "Authentication failed"}), 500
+
+@app.route('/api/math/oauth/discord/signup', methods=['POST'])
+@check_blocked_ip
+def discord_signup():
+    """Handle Discord account signup with custom username"""
+    try:
+        username = request.headers.get('Username')
+        password = request.headers.get('Password')
+        discord_token = request.headers.get('Discord-Token')
+        turnstile_token = request.headers.get('CF-Turnstile-Token')
+
+        if not username or not password or not discord_token or not turnstile_token:
+            return jsonify({"message": "Missing required fields"}), 400
+
+        # Verify Turnstile token
+        response = requests.post('https://challenges.cloudflare.com/turnstile/v0/siteverify', data={
+            'secret': os.environ.get('TURNSTILE_SECRET_KEY'),
+            'response': turnstile_token
+        })
+        if not response.json().get('success'):
+            return jsonify({"message": "Turnstile verification failed"}), 400
+
+        # Get user info from Discord
+        headers = {
+            'Authorization': f'Bearer {discord_token}'
+        }
+        user_response = requests.get(f'{API_ENDPOINT}/users/@me', headers=headers)
+        user_response.raise_for_status()
+        user_data = user_response.json()
+
+        discord_id = user_data.get('id')
+        email = user_data.get('email')
+
+        if not discord_id:
+            return jsonify({"message": "Could not get Discord user ID"}), 400
+
+        # Check if Discord ID or email already exists
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT user_id FROM users WHERE discord_link_id = %s OR email = %s", (discord_id, email))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "Discord account or email already registered"}), 400
+
+        # Check if username exists
+        cursor.execute("SELECT user_id FROM users WHERE username = %s", (username,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "Username already taken"}), 400
+
+        # Create new user
+        user_id = math.floor(random.randint(1000000000, 9999999999))
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+        cursor.execute(
+            "INSERT INTO users (username, user_password, user_id, email, discord_link_id) VALUES (%s, %s, %s, %s, %s)",
+            (username, hashed_password, user_id, email, discord_id)
+        )
+        cursor.execute(
+            "INSERT INTO achievements (user_id) VALUES (%s)",
+            (user_id,)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "message": "Account created successfully",
+            "user_id": user_id
+        }), 201
+
+    except Exception as e:
+        app.logger.error(f"Discord signup error: {str(e)}")
+        return jsonify({"message": "Failed to create account"}), 500
+
+@app.route('/api/math/oauth/discord/verify-2fa', methods=['POST'])
+@check_blocked_ip
+def verify_discord_2fa():
+    """Verify 2FA code for Discord OAuth login"""
+    try:
+        code = request.headers.get('code')
+        user_id = request.headers.get('user-id')
+        
+        if not code or not user_id:
+            return jsonify({"message": "2FA code and user ID are required"}), 400
+
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT secret FROM mfa WHERE user_id = %s", (user_id,))
+        mfa_record = cursor.fetchone()
+
+        if not mfa_record:
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "2FA not enabled for this account"}), 400
+
+        secret = fernet.decrypt(mfa_record['secret'].encode()).decode()
+        totp = pyotp.TOTP(secret)
+
+        if not totp.verify(code):
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "Invalid 2FA code"}), 400
+
+        # Get user info
+        cursor.execute("""
+            SELECT u.points, a.moderator 
+            FROM users u
+            LEFT JOIN achievements a ON u.user_id = a.user_id
+            WHERE u.user_id = %s
+        """, (user_id,))
+        user_info = cursor.fetchone()
+
+        # Generate session token
+        token = generate_token(user_id)
+
+        cursor.close()
+        conn.close()
+
+        try:
+            decrypted_token = fernet.decrypt(token.encode()).decode()
+        except InvalidToken:
+            return jsonify({"message": "Failed to generate secure token"}), 500
+
+        return jsonify({
+            "message": "Successfully authenticated",
+            "user_id": user_id,
+            "points": user_info['points'],
+            "is_mod": bool(user_info['moderator']),
+            "session_token": decrypted_token,
+            "encrypted_token": token,
+            "mfa_enabled": True
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Discord 2FA verification error: {str(e)}")
+        return jsonify({"message": "Authentication failed"}), 500
+
+@app.route('/api/math/oauth/discord/link/start', methods=['GET'])
+@check_blocked_ip
+@require_token
+def start_discord_link():
+    """Start the Discord OAuth flow for linking an account"""
+    user_id = request.headers.get('user-id')
+    if not user_id:
+        return jsonify({"message": "User ID is required"}), 400
+
+    # Store the user_id in session for the callback
+    session['linking_user_id'] = user_id
+    
+    # Generate Discord OAuth URL
+    oauth_url = f'https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={quote(REDIRECT_URI2)}&response_type=code&scope=identify%20email'
+    return jsonify({"authorization_url": oauth_url}), 200
+
+@app.route('/api/math/oauth/discord/link/callback', methods=['GET'])
+@check_blocked_ip
+def discord_link_callback():
+    """Handle the Discord OAuth callback for account linking"""
+    try:
+        # Get the user_id from session
+        user_id = session.get('linking_user_id')
+        if not user_id:
+            return jsonify({"message": "No user ID found in session"}), 400
+
+        # Get the authorization code from the callback
+        code = request.args.get('code')
+        app.logger.warn(f"Authorization code received: {code}")
+        if not code:
+            return jsonify({"message": "No authorization code received"}), 400
+        
+        token_data = exchange_code(code, REDIRECT_URI2)  # Use REDIRECT_URI2 for linking
+        access_token = token_data['access_token']
+
+        # Get user info from Discord
+        headers = {
+            'Authorization': f'Bearer {access_token}'
+        }
+        user_response = requests.get(f'{API_ENDPOINT}/users/@me', headers=headers)
+        user_response.raise_for_status()
+        user_data = user_response.json()
+
+        discord_id = user_data.get('id')
+        if not discord_id:
+            return jsonify({"message": "Could not get Discord user ID"}), 400
+
+        # Check if the Discord account is already linked to another user
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT user_id FROM users WHERE discord_link_id = %s AND user_id != %s", (discord_id, user_id))
+        existing_link = cursor.fetchone()
+
+        if existing_link:
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "This Discord account is already linked to another user"}), 400
+
+        # Update the user's Discord link ID
+        cursor.execute("UPDATE users SET discord_link_id = %s WHERE user_id = %s", (discord_id, user_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Clear the session
+        session.pop('linking_user_id', None)
+
+        # Redirect to settings page with success message
+        return redirect('/math/settings.html?message=Discord account linked successfully')
+
+    except Exception as e:
+        app.logger.error(f"Discord account linking error: {str(e)}")
+        return jsonify({"message": "Failed to link Discord account"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=3001, debug=True)

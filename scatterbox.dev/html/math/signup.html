@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width">
-  <title>Sign Up Page</title>
+  <title>Sign Up</title>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
   <style>
     body, html {
       height: 100%;
@@ -13,6 +13,7 @@
       justify-content: center;
       align-items: center;
       font-family: Arial, sans-serif;
+      background-color: #f0f0f0;
     }
 
     .login-container {
@@ -47,13 +48,6 @@
       font-size: 18px;
       cursor: pointer;
       border-radius: 5px;
-      background-color: #4CAF50;
-      color: white;
-      border: none;
-    }
-
-    .login-container button:hover {
-      background-color: #45a049;
     }
 
     .turnstile-container {
@@ -64,6 +58,60 @@
       color: red;
       font-size: 0.9em;
     }
+
+    .divider {
+      margin: 20px 0;
+      text-align: center;
+      position: relative;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      width: 45%;
+      height: 1px;
+      background-color: #ddd;
+    }
+
+    .divider::before {
+      left: 0;
+    }
+
+    .divider::after {
+      right: 0;
+    }
+
+    #confirm {
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+    }
+
+    #confirm:hover {
+      background-color: #45a049;
+    }
+
+    .google-btn {
+      background-color: #4285f4;
+      color: white;
+      border: none;
+    }
+
+    .google-btn:hover {
+      background-color: #357abd;
+    }
+
+    .discord-btn {
+      background-color: #5865F2;
+      color: white;
+      border: none;
+    }
+
+    .discord-btn:hover {
+      background-color: #4752C4;
+    }
   </style>
 </head>
 <body>
@@ -72,12 +120,14 @@
     <input type="text" id="username" placeholder="Username">
     <input type="password" id="password" placeholder="Password">
     
-    <!-- Cloudflare Turnstile Widget -->
     <div class="turnstile-container">
       <div class="cf-turnstile" data-sitekey="0x4AAAAAAAxE2R6Z0zwKgFG4" data-theme="light"></div>
     </div>
     
-    <button id="confirm">Confirm</button>
+    <button id="confirm">Sign Up</button>
+    <div class="divider">or</div>
+    <button id="google-signup" class="google-btn">Sign up with Google</button>
+    <button id="discord-signup" class="discord-btn">Sign up with Discord</button>
     <p id="login-status"></p>
   </div>
   
@@ -96,42 +146,74 @@
       
       var aiModHeaders = new Headers();
       aiModHeaders.append('Content', username);
-      aiModHeaders.append('CF-Turnstile-Token', turnstileToken); // Include Turnstile token
+      aiModHeaders.append('CF-Turnstile-Token', turnstileToken);
       
       // Calling AI-mod API first to check if the username is appropriate
       fetch('https://scatterbox.dev/api/ai-moderation', {
-          method: 'POST',
-          headers: aiModHeaders
+        method: 'POST',
+        headers: aiModHeaders
       })
       .then(response => response.json())
       .then(data => {
-          if (data.message) {
-              document.getElementById('login-status').textContent = 'This username has been blocked by automatic systems. If you think this was a mistake, please contact the site administrator.';
-          } else {
-              // Username passed AI mod check, proceed with original sign-up process
-              if (username.length > 3 && username.length < 21) {
-                  var headers = new Headers();
-                  headers.append('username', username);
-                  headers.append('password', password);
-                  headers.append('CF-Turnstile-Token', turnstileToken); // Include Turnstile token
-                  
-                  fetch('https://scatterbox.dev/api/math/signup', {
-                      method: 'POST',
-                      headers: headers
-                  })
-                  .finally(function() {
-                      // Always redirect to the login page after the fetch attempt
-                      window.location.href = '/math/login.html';
-                  });
+        if (data.message) {
+          document.getElementById('login-status').textContent = 'This username has been blocked by automatic systems. If you think this was a mistake, please contact the site administrator.';
+        } else {
+          // Username passed AI mod check, proceed with original sign-up process
+          if (username.length > 3 && username.length < 21) {
+            var headers = new Headers();
+            headers.append('username', username);
+            headers.append('password', password);
+            headers.append('CF-Turnstile-Token', turnstileToken);
+            
+            fetch('https://scatterbox.dev/api/math/signup', {
+              method: 'POST',
+              headers: headers
+            })
+            .then(response => response.json())
+            .then(data => {
+              if (data.message === "User registered successfully") {
+                document.getElementById('login-status').style.color = 'green';
+                document.getElementById('login-status').textContent = 'Account created successfully! Redirecting to login...';
+                setTimeout(() => {
+                  window.location.href = '/math/login.html';
+                }, 2000);
               } else {
-                  document.getElementById('login-status').textContent = 'Username must be between 4 and 20 characters';
+                document.getElementById('login-status').textContent = data.message;
               }
+            })
+            .catch(error => {
+              console.error('Error:', error);
+              document.getElementById('login-status').textContent = 'An error occurred. Please try again.';
+            });
+          } else {
+            document.getElementById('login-status').textContent = 'Username must be between 4 and 20 characters.';
           }
+        }
       })
       .catch(error => {
-          console.log('Error:', error);
-          document.getElementById('login-status').textContent = 'An error occurred. Please try again.';
+        console.error('Error:', error);
+        document.getElementById('login-status').textContent = 'An error occurred. Please try again.';
       });
+    });
+
+    document.getElementById('google-signup').addEventListener('click', function() {
+      fetch('https://scatterbox.dev/api/math/oauth/google/start', {
+        method: 'GET'
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.authorization_url) {
+          window.location.href = data.authorization_url;
+        }
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        document.getElementById('login-status').textContent = 'Failed to start Google signup';
+      });
+    });
+
+    document.getElementById('discord-signup').addEventListener('click', function() {
+      window.location.href = 'https://discord.com/oauth2/authorize?client_id=1322216623461105734&response_type=code&redirect_uri=https%3A%2F%2Fscatterbox.dev%2Fapi%2Fmath%2Foauth%2Fdiscord%2Fcallback&scope=identify+email';
     });
   </script>
 </body>

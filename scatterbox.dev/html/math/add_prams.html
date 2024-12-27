@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Adding Parameters</title>
+  <script>
+    window.onload = function() {
+      // Get URL parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      const redirectUrl = urlParams.get('redir');
+
+      // Iterate through all parameters except 'redir'
+      urlParams.forEach((value, key) => {
+        if (key !== 'redir') {
+          // Store each parameter in sessionStorage
+          sessionStorage.setItem(key, value);
+        }
+      });
+
+      // Redirect to specified URL if provided
+      if (redirectUrl) {
+        window.location.href = redirectUrl;
+      }
+    };
+  </script>
+</head>
+<body>
+  <p>Redirecting...</p>
+</body>
+</html>

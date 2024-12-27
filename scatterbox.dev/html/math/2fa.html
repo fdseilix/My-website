@@ -69,6 +69,13 @@
 
         document.getElementById('2fa-form').addEventListener('submit', async function(event) {
             event.preventDefault();
+            let google_credentials = null;
+            if (sessionStorage.getItem('google_token')) {
+                google_credentials = {
+                    google_token: sessionStorage.getItem('google_token'),
+                    user_id: sessionStorage.getItem('user_id')
+                }
+            }
             const code = hiddenInput.value;
             const username = sessionStorage.getItem('username');
             const password = sessionStorage.getItem('password');
@@ -81,6 +88,9 @@
             headers.append('code', code);
             headers.append('username', username);
             headers.append('password', password);
+            if (google_credentials) {
+                headers.append('googlecredentials', JSON.stringify(google_credentials));
+            }
 
             // Add session-token and encrypted-token if they exist
             const sessionToken = sessionStorage.getItem('session_token');
